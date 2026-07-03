@@ -6,8 +6,8 @@
 
 use crate::client::VeyronClient;
 use std::env;
-use veyron::proto::veyron::{envelope, Envelope, Event, PluginManifest, Pong};
-use veyron::utils::errors::VeyronError;
+use veyron_wire::proto::veyron::{envelope, Envelope, Event, PluginManifest, Pong};
+use veyron_wire::WireError as VeyronError;
 
 fn unix_millis() -> u64 {
     std::time::SystemTime::now()
@@ -78,7 +78,7 @@ pub trait Plugin {
     /// the world-writable shared /tmp (BUG-006).
     async fn run(&mut self) -> Result<(), VeyronError> {
         let socket_path = env::var("VEYRON_SOCKET_PATH")
-            .unwrap_or_else(|_| veyron::utils::config::default_socket_path());
+            .unwrap_or_else(|_| veyron_wire::socket::default_socket_path());
         self.run_with(&socket_path).await
     }
 
@@ -110,7 +110,10 @@ pub trait Plugin {
                 ack.reject_reason
             )));
         }
-        self.on_init(&mut client).await?;
+        if let Err(e) = self.on_init(&mut client).await {
+            let _ = self.on_shutdown().await;
+            return Err(e);
+        }
         loop {
             let env = match client.recv().await {
                 Ok(env) => env,
@@ -139,8 +142,14 @@ pub trait Plugin {
                     }
                 }
                 _ => {
-                    if let Ok(Some(resp)) = self.on_message(env).await {
-                        let _ = client.send("kernel", resp).await;
+                    // A handler error ends the receive loop (see on_shutdown's
+                    // doc comment): it's the plugin signalling a fatal condition.
+                    match self.on_message(env).await {
+                        Ok(Some(resp)) => {
+                            let _ = client.send("kernel", resp).await;
+                        }
+                        Ok(None) => {}
+                        Err(_) => break,
                     }
                 }
             }

@@ -1,0 +1,5 @@
+# Copy to .cargo/config.toml (gitignored) to build against an unpublished
+# local veyron-wire checkout, e.g. while both repos are being developed
+# together before the first crates.io release.
+[patch.crates-io]
+veyron-wire = { path = "../veyron/wire" }
