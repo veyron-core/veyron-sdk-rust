@@ -452,3 +452,99 @@ async fn plugin_serve_loop_handles_ping_event_and_shutdown() {
     assert_eq!(plugin.events_seen, vec!["evt-42".to_string()]);
     kernel.await.unwrap();
 }
+
+// ── T-07: on_message handler errors must propagate out of serve() ──────────
+
+struct FailingPlugin {
+    shutdown_called: bool,
+}
+
+impl Plugin for FailingPlugin {
+    fn id(&self) -> &str {
+        "failing-plugin"
+    }
+
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest::default()
+    }
+
+    async fn on_message(&mut self, _env: Envelope) -> Result<Option<Envelope>, VeyronError> {
+        Err(VeyronError::Timeout)
+    }
+
+    async fn on_shutdown(&mut self) -> Result<(), VeyronError> {
+        self.shutdown_called = true;
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn plugin_serve_propagates_on_message_handler_error() {
+    let (a, mut kernel_side) = UnixStream::pair().unwrap();
+    let client = VeyronClient::from_stream(a, None);
+
+    let kernel = tokio::spawn(async move {
+        let _reg = read_frame(&mut kernel_side).await.unwrap();
+        let ack = Envelope {
+            payload: Some(envelope::Payload::PluginRegisterAck(PluginRegisterAck {
+                accepted: true,
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        ack.encode(&mut buf).unwrap();
+        let frame = Frame {
+            magic: 0x5652,
+            flags: 0,
+            length: buf.len() as u32,
+            target: [0u8; 32],
+            crc32: crc32fast::hash(&buf),
+            payload: buf.into(),
+            mac: None,
+        };
+        write_frame_raw(&mut kernel_side, &frame).await.unwrap();
+
+        // Any envelope not handled specially (Ping/Event/PluginShutdown) routes
+        // to on_message. A bare Pong lands there.
+        let msg = Envelope {
+            payload: Some(envelope::Payload::Pong(veyron_sdk::proto::Pong {
+                original_timestamp: 0,
+                server_timestamp: 0,
+            })),
+            ..Default::default()
+        };
+        let mut buf = Vec::new();
+        msg.encode(&mut buf).unwrap();
+        let frame = Frame {
+            magic: 0x5652,
+            flags: 0,
+            length: buf.len() as u32,
+            target: [0u8; 32],
+            crc32: crc32fast::hash(&buf),
+            payload: buf.into(),
+            mac: None,
+        };
+        write_frame_raw(&mut kernel_side, &frame).await.unwrap();
+        // Keep kernel_side alive until serve() has had time to observe the
+        // error and exit; drop happens when this task ends.
+        let _ = read_frame(&mut kernel_side).await;
+    });
+
+    let mut plugin = FailingPlugin {
+        shutdown_called: false,
+    };
+    let result = tokio::time::timeout(Duration::from_secs(5), plugin.serve(client, ""))
+        .await
+        .expect("serve loop did not exit after handler error");
+
+    assert!(
+        matches!(result, Err(VeyronError::Timeout)),
+        "handler error must propagate out of serve(), got {result:?}"
+    );
+    assert!(
+        plugin.shutdown_called,
+        "on_shutdown must still run before the error propagates"
+    );
+    let _ = kernel.await;
+}
