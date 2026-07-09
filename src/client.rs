@@ -30,9 +30,9 @@ use veyron_wire::framing::{
 };
 use veyron_wire::mac::{compute_tag, derive_session_key, verify_tag};
 use veyron_wire::proto::veyron::{
-    envelope, ActionRequest, ActionResponse, AudioStreamChunk, Envelope, EventAck, KernelCommand,
-    KernelCommandAck, Ping, PluginManifest, PluginRegister, PluginRegisterAck, Subscribe,
-    Unsubscribe,
+    envelope, ActionRequest, ActionResponse, AudioStreamChunk, Envelope, EventAck, EventPublish,
+    EventPublishAck, KernelCommand, KernelCommandAck, Ping, PluginManifest, PluginRegister,
+    PluginRegisterAck, Subscribe, Unsubscribe,
 };
 use veyron_wire::WireError as VeyronError;
 
@@ -453,6 +453,52 @@ impl VeyronClient {
             ..Default::default()
         };
         self.send("kernel", env).await
+    }
+
+    /// Publish an event to the kernel event bus. The kernel namespaces
+    /// `event_type` as `"plugin.<this-client's-registered-id>.<event_type>"`
+    /// before delivering it to subscribers — see
+    /// docs/superpowers/specs/2026-07-06-plugin-event-publish-design.md.
+    /// Requires `PERMISSION_EVENT_PUBLISH`. `timeout_ms == 0` uses the
+    /// kernel default of 30s.
+    pub async fn publish_event(
+        &mut self,
+        event_type: &str,
+        payload_json: &[u8],
+        timeout_ms: u32,
+    ) -> Result<EventPublishAck, VeyronError> {
+        let env = Envelope {
+            payload: Some(envelope::Payload::EventPublish(EventPublish {
+                event_type: event_type.to_string(),
+                payload_json: payload_json.to_vec(),
+            })),
+            ..Default::default()
+        };
+        self.send("kernel", env).await?;
+
+        let timeout = if timeout_ms == 0 {
+            DEFAULT_REQUEST_TIMEOUT
+        } else {
+            Duration::from_millis(timeout_ms as u64)
+        };
+        let deadline = Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return Err(VeyronError::Timeout);
+            }
+            let response = self.recv_timeout(remaining).await?;
+            match response.payload {
+                Some(envelope::Payload::EventPublishAck(ack)) => return Ok(ack),
+                Some(envelope::Payload::Error(err)) => {
+                    return Err(VeyronError::Internal(format!(
+                        "kernel error: {} ({})",
+                        err.message, err.details
+                    )));
+                }
+                _ => continue, // unrelated traffic while waiting
+            }
+        }
     }
 
     /// Ask the kernel to perform an action (e.g. `"get_weather"`,
