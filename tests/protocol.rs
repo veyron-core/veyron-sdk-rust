@@ -548,3 +548,57 @@ async fn plugin_serve_propagates_on_message_handler_error() {
     );
     let _ = kernel.await;
 }
+
+#[tokio::test]
+async fn send_action_streaming_sets_streaming_flag_and_returns_action_id() {
+    let (a, mut b) = UnixStream::pair().unwrap();
+    let mut client = VeyronClient::from_stream(a, None);
+
+    let action_id = client.send_action_streaming("upload", 5000).await.unwrap();
+    assert!(action_id.starts_with("act-"));
+
+    let env = read_frame(&mut b).await.map(|frame| decode(&frame)).unwrap();
+    match env.payload {
+        Some(envelope::Payload::ActionRequest(req)) => {
+            assert_eq!(req.action_id, action_id);
+            assert_eq!(req.action, "upload");
+            assert!(req.streaming);
+        }
+        other => panic!("expected ActionRequest, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn send_request_chunk_and_send_response_chunk_roundtrip() {
+    let (a, mut b) = UnixStream::pair().unwrap();
+    let mut client = VeyronClient::from_stream(a, None);
+
+    client
+        .send_request_chunk("act-1", 0, b"hello".to_vec(), false)
+        .await
+        .unwrap();
+    let env = read_frame(&mut b).await.map(|frame| decode(&frame)).unwrap();
+    match env.payload {
+        Some(envelope::Payload::ActionRequestChunk(c)) => {
+            assert_eq!(c.action_id, "act-1");
+            assert_eq!(c.seq, 0);
+            assert_eq!(c.chunk, b"hello");
+            assert!(!c.r#final);
+        }
+        other => panic!("expected ActionRequestChunk, got {other:?}"),
+    }
+
+    client
+        .send_response_chunk("kact-1", 3, b"world".to_vec())
+        .await
+        .unwrap();
+    let env = read_frame(&mut b).await.map(|frame| decode(&frame)).unwrap();
+    match env.payload {
+        Some(envelope::Payload::ActionResponseChunk(c)) => {
+            assert_eq!(c.action_id, "kact-1");
+            assert_eq!(c.seq, 3);
+            assert_eq!(c.chunk, b"world");
+        }
+        other => panic!("expected ActionResponseChunk, got {other:?}"),
+    }
+}

@@ -30,9 +30,10 @@ use veyron_wire::framing::{
 };
 use veyron_wire::mac::{compute_tag, derive_session_key, verify_tag};
 use veyron_wire::proto::veyron::{
-    envelope, ActionRequest, ActionResponse, AudioStreamChunk, Envelope, EventAck, EventPublish,
-    EventPublishAck, KernelCommand, KernelCommandAck, Ping, PluginManifest, PluginRegister,
-    PluginRegisterAck, Subscribe, Unsubscribe,
+    envelope, ActionRequest, ActionRequestChunk, ActionResponse, ActionResponseChunk,
+    AudioStreamChunk, Envelope, EventAck, EventPublish, EventPublishAck, KernelCommand,
+    KernelCommandAck, Ping, PluginManifest, PluginRegister, PluginRegisterAck, Subscribe,
+    Unsubscribe,
 };
 use veyron_wire::WireError as VeyronError;
 
@@ -550,6 +551,77 @@ impl VeyronClient {
                 _ => continue, // unrelated traffic while waiting
             }
         }
+    }
+
+    /// Like [`VeyronClient::send_action`] but for an action whose body will
+    /// be delivered incrementally via [`VeyronClient::send_request_chunk`]
+    /// rather than all at once in `params_json`. Returns the generated
+    /// `action_id` immediately — this does NOT wait for an `ActionResponse`;
+    /// drive that separately via [`VeyronClient::recv`]/`recv_timeout`,
+    /// matching on the same `action_id` (mirrors `send_action`'s own
+    /// single-task-drives-request/response convention).
+    pub async fn send_action_streaming(
+        &mut self,
+        action: &str,
+        timeout_ms: u32,
+    ) -> Result<String, VeyronError> {
+        let action_id = next_request_id("act");
+        let env = Envelope {
+            payload: Some(envelope::Payload::ActionRequest(ActionRequest {
+                action_id: action_id.clone(),
+                action: action.to_string(),
+                params_json: vec![],
+                timeout_ms,
+                streaming: true,
+            })),
+            ..Default::default()
+        };
+        self.send("kernel", env).await?;
+        Ok(action_id)
+    }
+
+    /// Send one chunk of a streaming action's request body. `action_id` is
+    /// the id returned by [`VeyronClient::send_action_streaming`]. Set
+    /// `is_final` on the last chunk.
+    pub async fn send_request_chunk(
+        &mut self,
+        action_id: &str,
+        seq: u32,
+        chunk: Vec<u8>,
+        is_final: bool,
+    ) -> Result<(), VeyronError> {
+        let env = Envelope {
+            payload: Some(envelope::Payload::ActionRequestChunk(ActionRequestChunk {
+                action_id: action_id.to_string(),
+                seq,
+                chunk,
+                r#final: is_final,
+            })),
+            ..Default::default()
+        };
+        self.send("kernel", env).await
+    }
+
+    /// Provider-side: send one chunk of a streaming action's response body.
+    /// `action_id` here is the id from the `ActionRequest` the provider
+    /// received (already kernel-internal, matching how a provider's terminal
+    /// `ActionResponse` is addressed today). Terminate the stream with a
+    /// normal `ActionResponse` — there is no separate "final" response chunk.
+    pub async fn send_response_chunk(
+        &mut self,
+        action_id: &str,
+        seq: u32,
+        chunk: Vec<u8>,
+    ) -> Result<(), VeyronError> {
+        let env = Envelope {
+            payload: Some(envelope::Payload::ActionResponseChunk(ActionResponseChunk {
+                action_id: action_id.to_string(),
+                seq,
+                chunk,
+            })),
+            ..Default::default()
+        };
+        self.send("kernel", env).await
     }
 
     /// Send a [`KernelCommand`] and await its ack.
