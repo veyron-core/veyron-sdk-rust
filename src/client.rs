@@ -622,11 +622,13 @@ impl VeyronClient {
         chunk: Vec<u8>,
     ) -> Result<(), VeyronError> {
         let env = Envelope {
-            payload: Some(envelope::Payload::ActionResponseChunk(ActionResponseChunk {
-                action_id: action_id.to_string(),
-                seq,
-                chunk,
-            })),
+            payload: Some(envelope::Payload::ActionResponseChunk(
+                ActionResponseChunk {
+                    action_id: action_id.to_string(),
+                    seq,
+                    chunk,
+                },
+            )),
             ..Default::default()
         };
         self.send("kernel", env).await

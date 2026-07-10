@@ -558,7 +558,10 @@ async fn send_action_streaming_sets_streaming_flag_and_returns_action_id() {
     let action_id = client.send_action_streaming("upload", 5000).await.unwrap();
     assert!(action_id.starts_with("act-"));
 
-    let env = read_frame(&mut b).await.map(|frame| decode(&frame)).unwrap();
+    let env = read_frame(&mut b)
+        .await
+        .map(|frame| decode(&frame))
+        .unwrap();
     match env.payload {
         Some(envelope::Payload::ActionRequest(req)) => {
             assert_eq!(req.action_id, action_id);
@@ -578,7 +581,10 @@ async fn send_request_chunk_and_send_response_chunk_roundtrip() {
         .send_request_chunk("act-1", 0, b"hello".to_vec(), false)
         .await
         .unwrap();
-    let env = read_frame(&mut b).await.map(|frame| decode(&frame)).unwrap();
+    let env = read_frame(&mut b)
+        .await
+        .map(|frame| decode(&frame))
+        .unwrap();
     match env.payload {
         Some(envelope::Payload::ActionRequestChunk(c)) => {
             assert_eq!(c.action_id, "act-1");
@@ -593,7 +599,10 @@ async fn send_request_chunk_and_send_response_chunk_roundtrip() {
         .send_response_chunk("kact-1", 3, b"world".to_vec())
         .await
         .unwrap();
-    let env = read_frame(&mut b).await.map(|frame| decode(&frame)).unwrap();
+    let env = read_frame(&mut b)
+        .await
+        .map(|frame| decode(&frame))
+        .unwrap();
     match env.payload {
         Some(envelope::Payload::ActionResponseChunk(c)) => {
             assert_eq!(c.action_id, "kact-1");
@@ -612,7 +621,10 @@ async fn send_action_returns_error_when_stream_aborted_for_its_action_id() {
     let send_fut = tokio::spawn(async move { client.send_action("upload", b"{}", 2000).await });
 
     // Read the ActionRequest the client just sent so we know its action_id.
-    let env = read_frame(&mut b).await.map(|frame| decode(&frame)).unwrap();
+    let env = read_frame(&mut b)
+        .await
+        .map(|frame| decode(&frame))
+        .unwrap();
     let action_id = match env.payload {
         Some(envelope::Payload::ActionRequest(req)) => req.action_id,
         other => panic!("expected ActionRequest, got {other:?}"),
