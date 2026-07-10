@@ -15,7 +15,8 @@ use veyron_sdk::framing::{
     FLAG_FRAGMENTED, FLAG_MAC_PRESENT, FLAG_RAW_BINARY, FRAG_HEADER_SIZE, MAX_PAYLOAD_SIZE,
 };
 use veyron_sdk::proto::{
-    envelope, Envelope, Event, Ping, PluginManifest, PluginRegisterAck, PluginShutdown,
+    envelope, ActionStreamAbort, Envelope, Event, Ping, PluginManifest, PluginRegisterAck,
+    PluginShutdown,
 };
 use veyron_sdk::{Plugin, VeyronClient, VeyronError};
 
@@ -600,5 +601,49 @@ async fn send_request_chunk_and_send_response_chunk_roundtrip() {
             assert_eq!(c.chunk, b"world");
         }
         other => panic!("expected ActionResponseChunk, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn send_action_returns_error_when_stream_aborted_for_its_action_id() {
+    let (a, mut b) = UnixStream::pair().unwrap();
+    let mut client = VeyronClient::from_stream(a, None);
+
+    let send_fut = tokio::spawn(async move { client.send_action("upload", b"{}", 2000).await });
+
+    // Read the ActionRequest the client just sent so we know its action_id.
+    let env = read_frame(&mut b).await.map(|frame| decode(&frame)).unwrap();
+    let action_id = match env.payload {
+        Some(envelope::Payload::ActionRequest(req)) => req.action_id,
+        other => panic!("expected ActionRequest, got {other:?}"),
+    };
+
+    // Reply with an abort for that exact action_id instead of an ActionResponse.
+    let abort_env = Envelope {
+        payload: Some(envelope::Payload::ActionStreamAbort(ActionStreamAbort {
+            action_id: action_id.clone(),
+            reason: "receiver backpressure".to_string(),
+        })),
+        ..Default::default()
+    };
+    let mut buf = Vec::new();
+    abort_env.encode(&mut buf).unwrap();
+    let frame = Frame {
+        magic: 0x5652,
+        flags: 0,
+        length: buf.len() as u32,
+        target: [0u8; 32],
+        crc32: crc32fast::hash(&buf),
+        payload: buf.into(),
+        mac: None,
+    };
+    write_frame_raw(&mut b, &frame).await.unwrap();
+
+    let err = send_fut.await.unwrap().expect_err("expected an error");
+    match err {
+        VeyronError::Internal(msg) => {
+            assert!(msg.contains("receiver backpressure"), "got: {msg}");
+        }
+        other => panic!("expected Internal error, got {other:?}"),
     }
 }

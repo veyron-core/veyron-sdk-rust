@@ -542,6 +542,14 @@ impl VeyronClient {
                 Some(envelope::Payload::ActionResponse(resp)) if resp.action_id == action_id => {
                     return Ok(resp);
                 }
+                Some(envelope::Payload::ActionStreamAbort(abort))
+                    if abort.action_id == action_id =>
+                {
+                    return Err(VeyronError::Internal(format!(
+                        "stream aborted: {}",
+                        abort.reason
+                    )));
+                }
                 Some(envelope::Payload::Error(err)) => {
                     return Err(VeyronError::Internal(format!(
                         "kernel error: {} ({})",
