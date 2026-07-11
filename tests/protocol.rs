@@ -665,10 +665,7 @@ async fn close_session_sends_session_close_envelope() {
     let (a, mut b) = UnixStream::pair().unwrap();
     let mut client = VeyronClient::from_stream(a, None);
 
-    client
-        .close_session("act-1", "done")
-        .await
-        .unwrap();
+    client.close_session("act-1", "done").await.unwrap();
 
     let env = read_frame(&mut b)
         .await
