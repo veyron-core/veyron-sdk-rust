@@ -32,8 +32,8 @@ use veyron_wire::mac::{compute_tag, derive_session_key, verify_tag};
 use veyron_wire::proto::veyron::{
     envelope, ActionRequest, ActionRequestChunk, ActionResponse, ActionResponseChunk,
     AudioStreamChunk, Envelope, EventAck, EventPublish, EventPublishAck, KernelCommand,
-    KernelCommandAck, Ping, PluginManifest, PluginRegister, PluginRegisterAck, Subscribe,
-    Unsubscribe,
+    KernelCommandAck, Ping, PluginManifest, PluginRegister, PluginRegisterAck, SessionClose,
+    Subscribe, Unsubscribe,
 };
 use veyron_wire::WireError as VeyronError;
 
@@ -629,6 +629,30 @@ impl VeyronClient {
                     chunk,
                 },
             )),
+            ..Default::default()
+        };
+        self.send("kernel", env).await
+    }
+
+    /// R6-04: gracefully close a long-lived streaming session. `action_id`
+    /// is whichever id this side already uses to address the session — the
+    /// original `action_id` on the requester side (same as
+    /// [`VeyronClient::send_request_chunk`]), or the kernel-internal id on
+    /// the provider side (same as [`VeyronClient::send_response_chunk`]).
+    /// The kernel forwards this to the other peer and evicts the session;
+    /// only valid after the session has been accepted (the provider's first
+    /// `ActionResponse{status: ACTION_OK}`) — closing before that is
+    /// rejected as a protocol error.
+    pub async fn close_session(
+        &mut self,
+        action_id: &str,
+        reason: &str,
+    ) -> Result<(), VeyronError> {
+        let env = Envelope {
+            payload: Some(envelope::Payload::SessionClose(SessionClose {
+                action_id: action_id.to_string(),
+                reason: reason.to_string(),
+            })),
             ..Default::default()
         };
         self.send("kernel", env).await

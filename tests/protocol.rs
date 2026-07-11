@@ -16,7 +16,7 @@ use veyron_sdk::framing::{
 };
 use veyron_sdk::proto::{
     envelope, ActionStreamAbort, Envelope, Event, Ping, PluginManifest, PluginRegisterAck,
-    PluginShutdown,
+    PluginShutdown, SessionClose,
 };
 use veyron_sdk::{Plugin, VeyronClient, VeyronError};
 
@@ -657,5 +657,96 @@ async fn send_action_returns_error_when_stream_aborted_for_its_action_id() {
             assert!(msg.contains("receiver backpressure"), "got: {msg}");
         }
         other => panic!("expected Internal error, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn close_session_sends_session_close_envelope() {
+    let (a, mut b) = UnixStream::pair().unwrap();
+    let mut client = VeyronClient::from_stream(a, None);
+
+    client
+        .close_session("act-1", "done")
+        .await
+        .unwrap();
+
+    let env = read_frame(&mut b)
+        .await
+        .map(|frame| decode(&frame))
+        .unwrap();
+    match env.payload {
+        Some(envelope::Payload::SessionClose(close)) => {
+            assert_eq!(close.action_id, "act-1");
+            assert_eq!(close.reason, "done");
+        }
+        other => panic!("expected SessionClose, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn recv_distinguishes_session_close_from_stream_abort() {
+    let (a, mut b) = UnixStream::pair().unwrap();
+    let mut client = VeyronClient::from_stream(a, None);
+
+    // Inbound SessionClose (peer closed cleanly).
+    let close_env = Envelope {
+        payload: Some(envelope::Payload::SessionClose(SessionClose {
+            action_id: "act-1".to_string(),
+            reason: "client closed".to_string(),
+        })),
+        ..Default::default()
+    };
+    let mut buf = Vec::new();
+    close_env.encode(&mut buf).unwrap();
+    let frame = Frame {
+        magic: 0x5652,
+        flags: 0,
+        length: buf.len() as u32,
+        target: [0u8; 32],
+        crc32: crc32fast::hash(&buf),
+        payload: buf.into(),
+        mac: None,
+    };
+    write_frame_raw(&mut b, &frame).await.unwrap();
+
+    let received = client.recv().await.unwrap();
+    match received.payload {
+        Some(envelope::Payload::SessionClose(close)) => {
+            assert_eq!(close.action_id, "act-1");
+            assert_eq!(close.reason, "client closed");
+        }
+        other => panic!("expected SessionClose, got {other:?}"),
+    }
+
+    // Inbound ActionStreamAbort (kernel forced it) must decode as a
+    // distinct variant — callers can tell the two apart on the same
+    // action_id.
+    let abort_env = Envelope {
+        payload: Some(envelope::Payload::ActionStreamAbort(ActionStreamAbort {
+            action_id: "act-1".to_string(),
+            reason: "idle timeout".to_string(),
+        })),
+        ..Default::default()
+    };
+    let mut buf = Vec::new();
+    abort_env.encode(&mut buf).unwrap();
+    let frame = Frame {
+        magic: 0x5652,
+        flags: 0,
+        length: buf.len() as u32,
+        target: [0u8; 32],
+        crc32: crc32fast::hash(&buf),
+        payload: buf.into(),
+        mac: None,
+    };
+    write_frame_raw(&mut b, &frame).await.unwrap();
+
+    let received = client.recv().await.unwrap();
+    match received.payload {
+        Some(envelope::Payload::ActionStreamAbort(abort)) => {
+            assert_eq!(abort.action_id, "act-1");
+            assert_eq!(abort.reason, "idle timeout");
+        }
+        other => panic!("expected ActionStreamAbort, got {other:?}"),
     }
 }
