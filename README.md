@@ -81,8 +81,14 @@ let ack = client.register_with_token("weather", manifest, &jwt).await?;
 
 client.subscribe(vec!["alarm.fired".into()]).await?;
 let resp = client.send_action("get_weather", br#"{"city":"Berlin"}"#, 5_000).await?;
+let ack = client.publish_event("weather.updated", br#"{"city":"Berlin"}"#, 5_000).await?;
 let latency = client.ping().await?;
 ```
+
+`publish_event` requires `PERMISSION_EVENT_PUBLISH`; `timeout_ms == 0` uses
+the kernel's 30s default. It returns the kernel's `EventPublishAck` as-is —
+inspect `ack.status` yourself (`EVENT_PUBLISH_OK`/`ERROR`/`PERMISSION_DENY`)
+— and only errors on a kernel `Error` envelope or on timeout.
 
 Requests and responses are matched on a single connection; drive
 request/response traffic from one task, or use the `Plugin` trait's serve
