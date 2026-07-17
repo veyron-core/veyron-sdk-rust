@@ -521,6 +521,7 @@ impl VeyronClient {
                 params_json: params_json.to_vec(),
                 timeout_ms,
                 streaming: false,
+                ..Default::default()
             })),
             ..Default::default()
         };
@@ -581,6 +582,7 @@ impl VeyronClient {
                 params_json: vec![],
                 timeout_ms,
                 streaming: true,
+                ..Default::default()
             })),
             ..Default::default()
         };
